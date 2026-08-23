@@ -7,7 +7,7 @@ Workflow:
 3. Split data into training period and testing period.
 4. Train PyTorch neural network on historical training set.
 5. Predict signals on unseen out-of-sample test set.
-6. Execute backtest on test data and print profitability & performance report.
+6. Execute backtest with optional Risk-Reward Ratio & Stop-Loss risk management.
 """
 
 import sys
@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--htf_freq", type=str, default="4h", help="HTF frequency (default: 4h)")
     parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs (default: 15)")
     parser.add_argument("--initial_capital", type=float, default=10000.0, help="Initial capital ($)")
+    parser.add_argument("--stop_loss", type=float, default=None, help="Stop Loss fraction e.g. 0.01 for 1%%")
+    parser.add_argument("--risk_reward", type=float, default=None, help="Risk Reward ratio e.g. 2.0 for 1:2 R:R (TP = SL * RR)")
     return parser.parse_args()
 
 
@@ -75,14 +77,22 @@ def main():
     print("\n[5/5] Predicting trading signals and running backtest on test set...")
     test_signals = predict_signals(model, scaler, test_df)
 
-    backtester = Backtester(initial_capital=args.initial_capital)
+    backtester = Backtester(
+        initial_capital=args.initial_capital,
+        stop_loss_pct=args.stop_loss,
+        risk_reward_ratio=args.risk_reward
+    )
     results = backtester.run(test_df, test_signals)
 
     # Print Profitability Report
     data_source_label = f"REAL DATA ({args.symbol})" if args.real else ("CUSTOM CSV" if args.csv_15m else "SYNTHETIC DATA")
+    rr_str = f"1:{args.risk_reward:.1f}" if args.risk_reward else "None"
+    sl_str = f"{args.stop_loss * 100:.2f}%" if args.stop_loss else "None"
+
     print("\n" + "=" * 60)
     print(f"           OUT-OF-SAMPLE TEST PROFITABILITY REPORT           ")
     print(f" Source: {data_source_label}")
+    print(f" Risk Management: SL={sl_str} | Risk-Reward={rr_str}")
     print("=" * 60)
     print(f" Initial Capital:         ${results['initial_capital']:,.2f}")
     print(f" Final Capital:           ${results['final_capital']:,.2f}")

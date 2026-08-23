@@ -1,10 +1,14 @@
 """
-Backtesting module for multi-timeframe trading system.
+Backtesting module for multi-timeframe trading system with Risk-Reward Ratio (TP/SL) support.
 
 Simulates trade execution based on model signals on 15m candles:
 - Signal 0: Neutral / Exit position
 - Signal 1: Go Long
 - Signal 2: Go Short
+
+Supports Risk Management:
+- Stop-Loss % (SL)
+- Risk-Reward Ratio (TP = SL * RR_ratio)
 
 Calculates key performance metrics:
 - Total Return %
@@ -15,7 +19,7 @@ Calculates key performance metrics:
 - Profit Factor
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import numpy as np
 import pandas as pd
 
@@ -26,12 +30,16 @@ class Backtester:
         initial_capital: float = 10000.0,
         fee_rate: float = 0.0006,  # 0.06% taker fee
         slippage: float = 0.0002,  # 0.02% slippage
-        position_size: float = 1.0  # Fraction of capital per trade
+        position_size: float = 1.0, # Fraction of capital per trade
+        stop_loss_pct: Optional[float] = None, # e.g. 0.01 for 1%
+        risk_reward_ratio: Optional[float] = None # e.g. 2.0 for 1:2 R:R (TP = 2%)
     ):
         self.initial_capital = initial_capital
         self.fee_rate = fee_rate
         self.slippage = slippage
         self.position_size = position_size
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = (stop_loss_pct * risk_reward_ratio) if (stop_loss_pct and risk_reward_ratio) else None
 
     def run(self, df: pd.DataFrame, signals: np.ndarray) -> Dict[str, Any]:
         """
@@ -47,11 +55,15 @@ class Backtester:
         current_pos = 0  # 0 = cash, 1 = long, -1 = short
         entry_price = 0.0
         position_units = 0.0
+        tp_price = 0.0
+        sl_price = 0.0
 
         trades = []  # Record individual trades: pnl, return_pct, holding_period
         trade_entry_idx = 0
 
         close_prices = df['close'].values
+        high_prices = df['high'].values
+        low_prices = df['low'].values
         timestamps = df['timestamp'].values
 
         for i in range(n):
@@ -63,8 +75,60 @@ class Backtester:
                 target_pos = -1
 
             price = close_prices[i]
+            high = high_prices[i]
+            low = low_prices[i]
 
-            # Check if position needs to be changed
+            # Check for TP/SL triggers on existing open position first
+            if current_pos != 0 and self.stop_loss_pct is not None and self.take_profit_pct is not None:
+                exit_triggered = False
+                exit_price = 0.0
+                reason = ""
+
+                if current_pos == 1: # Long
+                    if low <= sl_price: # Stop Loss hit
+                        exit_price = sl_price * (1 - self.slippage)
+                        exit_triggered = True
+                        reason = "SL"
+                    elif high >= tp_price: # Take Profit hit
+                        exit_price = tp_price * (1 - self.slippage)
+                        exit_triggered = True
+                        reason = "TP"
+                elif current_pos == -1: # Short
+                    if high >= sl_price: # Stop Loss hit
+                        exit_price = sl_price * (1 + self.slippage)
+                        exit_triggered = True
+                        reason = "SL"
+                    elif low <= tp_price: # Take Profit hit
+                        exit_price = tp_price * (1 + self.slippage)
+                        exit_triggered = True
+                        reason = "TP"
+
+                if exit_triggered:
+                    if current_pos == 1:
+                        pnl = (exit_price - entry_price) * position_units
+                    else:
+                        pnl = (entry_price - exit_price) * position_units
+
+                    fee = exit_price * position_units * self.fee_rate
+                    net_pnl = pnl - fee
+                    capital += net_pnl
+
+                    trade_return = net_pnl / (entry_price * position_units) if (entry_price * position_units) > 0 else 0
+                    trades.append({
+                        'type': 'Long' if current_pos == 1 else 'Short',
+                        'entry_time': timestamps[trade_entry_idx],
+                        'exit_time': timestamps[i],
+                        'entry_price': entry_price,
+                        'exit_price': exit_price,
+                        'pnl': net_pnl,
+                        'return_pct': trade_return,
+                        'reason': reason
+                    })
+
+                    current_pos = 0
+                    position_units = 0.0
+
+            # Check if position needs to be changed via neural network signal
             if target_pos != current_pos:
                 # Close existing position if open
                 if current_pos != 0:
@@ -86,7 +150,8 @@ class Backtester:
                         'entry_price': entry_price,
                         'exit_price': exit_price,
                         'pnl': net_pnl,
-                        'return_pct': trade_return
+                        'return_pct': trade_return,
+                        'reason': 'Signal'
                     })
 
                     current_pos = 0
@@ -97,6 +162,14 @@ class Backtester:
                     current_pos = target_pos
                     trade_entry_idx = i
                     entry_price = price * (1 + self.slippage) if current_pos == 1 else price * (1 - self.slippage)
+
+                    if self.stop_loss_pct is not None and self.take_profit_pct is not None:
+                        if current_pos == 1:
+                            sl_price = entry_price * (1.0 - self.stop_loss_pct)
+                            tp_price = entry_price * (1.0 + self.take_profit_pct)
+                        else:
+                            sl_price = entry_price * (1.0 + self.stop_loss_pct)
+                            tp_price = entry_price * (1.0 - self.take_profit_pct)
 
                     allocated_capital = capital * self.position_size
                     position_units = allocated_capital / entry_price
@@ -130,7 +203,8 @@ class Backtester:
                 'entry_price': entry_price,
                 'exit_price': exit_price,
                 'pnl': net_pnl,
-                'return_pct': net_pnl / (entry_price * position_units)
+                'return_pct': net_pnl / (entry_price * position_units),
+                'reason': 'End'
             })
 
         equity_curve = np.array(equity_curve)

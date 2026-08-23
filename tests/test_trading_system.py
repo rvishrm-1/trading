@@ -81,6 +81,14 @@ class TestBacktestModule(unittest.TestCase):
         self.assertIn('win_rate_pct', results)
         self.assertIn('sharpe_ratio', results)
 
+    def test_backtester_risk_reward(self):
+        df_15m, _ = generate_synthetic_data(total_days=10, seed=42)
+        signals = np.ones(len(df_15m), dtype=int) # Always long
+        bt = Backtester(initial_capital=10000.0, stop_loss_pct=0.01, risk_reward_ratio=2.0)
+        results = bt.run(df_15m, signals)
+        self.assertIn('total_trades', results)
+        self.assertGreater(results['total_trades'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
