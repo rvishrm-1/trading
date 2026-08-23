@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from data import generate_synthetic_data, split_train_test_by_months, load_data_from_csv
+from data import generate_synthetic_data, fetch_real_data, split_train_test_by_months, load_data_from_csv
 from indicators import compute_macd, compute_supertrend, compute_htf_indicators, compute_15m_features
 from model import MultiTimeframeTradingNN, create_labels, train_model, predict_signals
 from backtest import Backtester
@@ -21,6 +21,13 @@ class TestDataModule(unittest.TestCase):
         self.assertFalse(df_htf.empty)
         self.assertIn('open_interest', df_15m.columns)
         self.assertIn('cvd', df_15m.columns)
+
+    def test_fetch_real_data(self):
+        df_15m, df_htf = fetch_real_data('BTC-USD', period='5d')
+        self.assertFalse(df_15m.empty)
+        self.assertFalse(df_htf.empty)
+        self.assertIn('cvd', df_15m.columns)
+        self.assertIn('open_interest', df_15m.columns)
 
     def test_train_test_split(self):
         df_15m, _ = generate_synthetic_data(total_days=600, seed=123)

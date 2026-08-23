@@ -1,6 +1,6 @@
 """
 Data module for multi-timeframe trading neural network.
-Provides synthetic data generation (20 months: 10 months train, 10 months test)
+Provides synthetic data generation, real market data fetching (via yfinance),
 and CSV loading capabilities for 15m and HTF (High Timeframe) data.
 """
 
@@ -84,13 +84,80 @@ def generate_synthetic_data(
     return df_15m, df_htf
 
 
+def fetch_real_data(
+    symbol: str = "BTC-USD",
+    period: str = "60d",
+    interval: str = "15m",
+    htf_freq: str = "4h"
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fetches real historical market data using yfinance, formats OHLCV,
+    and estimates CVD and Open Interest order flow metrics.
+    """
+    import yfinance as yf
+
+    data = yf.download(symbol, period=period, interval=interval, progress=False)
+
+    # Handle MultiIndex columns if returned by yfinance
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [col[0].lower() for col in data.columns]
+    else:
+        data.columns = [col.lower() for col in data.columns]
+
+    data = data.reset_index()
+
+    # Identify timestamp column
+    time_col = 'Datetime' if 'Datetime' in data.columns else ('Date' if 'Date' in data.columns else data.columns[0])
+    data = data.rename(columns={time_col: 'timestamp'})
+    data['timestamp'] = pd.to_datetime(data['timestamp']).dt.tz_localize(None)
+
+    # Ensure required columns exist
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        if col not in data.columns:
+            raise ValueError(f"Missing required column {col} from fetched data.")
+
+    df_15m = data[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
+
+    # Estimate volume delta and Cumulative Volume Delta (CVD) based on price direction within candle
+    close = df_15m['close']
+    open_p = df_15m['open']
+    high = df_15m['high']
+    low = df_15m['low']
+    vol = df_15m['volume']
+
+    # Buy volume fraction estimation using CLV (Close Location Value)
+    clv = np.where((high - low) > 0, ((close - low) - (high - close)) / (high - low), 0)
+    buy_vol = vol * (0.5 + 0.5 * clv)
+    sell_vol = vol - buy_vol
+    delta = buy_vol - sell_vol
+    df_15m['cvd'] = delta.cumsum()
+
+    # Estimate Open Interest proxy (cumulative trend-volume proxy)
+    pct_change = close.pct_change().fillna(0)
+    oi_proxy = (vol * (1 + np.abs(pct_change) * 10)).cumsum() + 100000
+    df_15m['open_interest'] = oi_proxy
+
+    # Resample to HTF
+    df_htf = df_15m.set_index('timestamp').resample(htf_freq).agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+        'open_interest': 'last',
+        'cvd': 'last'
+    }).reset_index().dropna()
+
+    return df_15m, df_htf
+
+
 def split_train_test_by_months(
     df: pd.DataFrame,
     train_months: int = 10,
     test_months: int = 10
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Splits dataframe into train and test sets based on exact date cutoff or month duration.
+    Splits dataframe into train and test sets based on date offset or equal split fallback.
     """
     start_date = df['timestamp'].min()
     train_end = start_date + pd.DateOffset(months=train_months)
@@ -99,8 +166,8 @@ def split_train_test_by_months(
     train_df = df[(df['timestamp'] >= start_date) & (df['timestamp'] < train_end)].copy()
     test_df = df[(df['timestamp'] >= train_end) & (df['timestamp'] <= test_end)].copy()
 
-    # Fallback in case DateOffset overshoots/undershoots exact len
-    if len(test_df) == 0:
+    # Fallback to 50/50 split if data range is shorter than train_months + test_months
+    if len(test_df) == 0 or len(train_df) == 0:
         midpoint = len(df) // 2
         train_df = df.iloc[:midpoint].copy()
         test_df = df.iloc[midpoint:].copy()
