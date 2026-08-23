@@ -14,6 +14,12 @@ Calculates key performance metrics:
 - Total Return %
 - Win Rate %
 - Total Trades
+- Winning Trades Count
+- Losing Trades Count
+- Average Return per Trade %
+- TP Hits Count
+- SL Hits Count
+- Buy & Hold Return %
 - Sharpe Ratio
 - Maximum Drawdown %
 - Profit Factor
@@ -31,8 +37,8 @@ class Backtester:
         fee_rate: float = 0.0006,  # 0.06% taker fee
         slippage: float = 0.0002,  # 0.02% slippage
         position_size: float = 1.0, # Fraction of capital per trade
-        stop_loss_pct: Optional[float] = None, # e.g. 0.01 for 1%
-        risk_reward_ratio: Optional[float] = None # e.g. 2.0 for 1:2 R:R (TP = 2%)
+        stop_loss_pct: Optional[float] = None, # e.g. 0.015 for 1.5%
+        risk_reward_ratio: Optional[float] = None # e.g. 2.0 for 2:1 R:R (TP = 3.0%)
     ):
         self.initial_capital = initial_capital
         self.fee_rate = fee_rate
@@ -58,7 +64,7 @@ class Backtester:
         tp_price = 0.0
         sl_price = 0.0
 
-        trades = []  # Record individual trades: pnl, return_pct, holding_period
+        trades = []  # Record individual trades
         trade_entry_idx = 0
 
         close_prices = df['close'].values
@@ -210,17 +216,34 @@ class Backtester:
         equity_curve = np.array(equity_curve)
         total_return_pct = ((capital - self.initial_capital) / self.initial_capital) * 100.0
 
-        # Calculate Win Rate & Profit Factor
+        # Calculate Buy and Hold Benchmark Return %
+        buy_and_hold_return_pct = ((close_prices[-1] - close_prices[0]) / close_prices[0]) * 100.0
+
+        # Calculate Detailed Trade Statistics
         if len(trades) > 0:
             pnls = [t['pnl'] for t in trades]
+            returns_pct = [t['return_pct'] * 100.0 for t in trades]
             winning_trades = [p for p in pnls if p > 0]
             losing_trades = [p for p in pnls if p <= 0]
-            win_rate = (len(winning_trades) / len(trades)) * 100.0
+
+            num_winning = len(winning_trades)
+            num_losing = len(losing_trades)
+            win_rate = (num_winning / len(trades)) * 100.0
+            avg_return_per_trade = np.mean(returns_pct)
+
+            tp_hits = sum(1 for t in trades if t.get('reason') == 'TP')
+            sl_hits = sum(1 for t in trades if t.get('reason') == 'SL')
+
             gross_profit = sum(winning_trades)
             gross_loss = abs(sum(losing_trades))
             profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else np.nan
         else:
+            num_winning = 0
+            num_losing = 0
             win_rate = 0.0
+            avg_return_per_trade = 0.0
+            tp_hits = 0
+            sl_hits = 0
             profit_factor = 0.0
 
         # Drawdown calculation
@@ -239,8 +262,14 @@ class Backtester:
             'initial_capital': self.initial_capital,
             'final_capital': capital,
             'total_return_pct': total_return_pct,
+            'buy_and_hold_return_pct': buy_and_hold_return_pct,
             'total_trades': len(trades),
+            'winning_trades': num_winning,
+            'losing_trades': num_losing,
             'win_rate_pct': win_rate,
+            'avg_return_per_trade_pct': avg_return_per_trade,
+            'tp_hits': tp_hits,
+            'sl_hits': sl_hits,
             'profit_factor': profit_factor,
             'max_drawdown_pct': max_drawdown_pct,
             'sharpe_ratio': sharpe_ratio,
